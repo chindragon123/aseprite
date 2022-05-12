@@ -164,6 +164,7 @@ bool PngFormat::onLoad(FileOp* fop)
   png_bytepp rows_pointer;
   PixelFormat pixelFormat;
 
+  // TODO: Adjust to set custom IO functions
   FileHandle handle(open_file_with_exception(fop->filename(), "rb"));
   FILE* fp = handle.get();
 
@@ -173,10 +174,16 @@ bool PngFormat::onLoad(FileOp* fop)
    * the compiler header file version, so that we know if the application
    * was compiled with a compatible version of the library
    */
-  png_structp png =
-    png_create_read_struct(PNG_LIBPNG_VER_STRING, (png_voidp)fop,
-                           report_png_error, report_png_error);
-  if (png == nullptr) {
+ 
+  auto libVerStrSize = strlen(PNG_LIBPNG_VER_STRING);
+  auto sbLibVer = sandbox.malloc_in_sandbox<char>(libVerStrSize);
+  strncpy(sbLibVer.unverified_safe_pointer_because(libVerStrSize, "compatibility"), PNG_LIBPNG_VER_STRING, libVerStrSize);
+
+  auto png =
+    sandbox.invoke_sandbox_function(png_create_read_struct, sbLibVer, NULL,
+                           NULL, NULL);
+  auto pngCheckPtr = png.unverified_safe_pointer_because(1, "Compatibility");
+  if (pngCheckPtr == nullptr) {
     fop->setError("png_create_read_struct\n");
     return false;
   }
@@ -184,16 +191,17 @@ bool PngFormat::onLoad(FileOp* fop)
   // Do don't check if the sRGB color profile is valid, it gives
   // problems with sRGB IEC61966-2.1 color profile from Photoshop.
   // See this thread: https://community.aseprite.org/t/2656
-  png_set_option(png, PNG_SKIP_sRGB_CHECK_PROFILE, PNG_OPTION_ON);
+  sandbox.invoke_sandbox_function(png_set_option, png, PNG_SKIP_sRGB_CHECK_PROFILE, PNG_OPTION_ON);
 
   // Set a function to read user data chunks
   auto opts = std::make_shared<PngOptions>();
-  png_set_read_user_chunk_fn(png, &opts, png_user_chunk);
+  png_set_read_user_chunk_fn(png, NULL, png_user_chunk);
 
   /* Allocate/initialize the memory for image information. */
-  png_infop info = png_create_info_struct(png);
+  auto info = png_create_info_struct(png);
+  auto infoCheckPtr = info.unverified_safe_pointer_because(1, "Compatibility");
   DestroyReadPng destroyer(png, info);
-  if (info == nullptr) {
+  if (infoCheckPtr == nullptr) {
     fop->setError("png_create_info_struct\n");
     return false;
   }
@@ -201,24 +209,38 @@ bool PngFormat::onLoad(FileOp* fop)
   /* Set error handling if you are using the setjmp/longjmp method (this is
    * the normal method of doing things with libpng).
    */
+  /*
   if (setjmp(png_jmpbuf(png))) {
     fop->setError("Error reading PNG file\n");
     return false;
   }
+  */
+
 
   /* Set up the input control if you are using standard C streams */
-  png_init_io(png, fp);
+  sandbox.invoke_sandbox_function(png_init_io, png, sbfp);
 
   /* If we have already read some of the signature */
-  png_set_sig_bytes(png, sig_read);
+  sandbox.invoke_sandbox_function(png_set_sig_bytes, png, sig_read);
 
   /* The call to png_read_info() gives us all of the information from the
    * PNG file before the first IDAT (image data chunk).
    */
-  png_read_info(png, info);
+  sandbox.invoke_sandbox_function(png_read_info, png, info);
 
-  png_get_IHDR(png, info, &width, &height, &bit_depth, &color_type,
-               &interlace_type, NULL, NULL);
+  auto sb_width = sandbox.malloc_in_sandbox<png_uint_32>(1);
+  auto sb_height = sandbox.malloc_in_sandbox<png_uint_32>(1);
+  auto sb_bit_depth = sandbox.malloc_in_sandbox<int>(1);
+  auto sb_color_type = sandbox.malloc_in_sandbox<int>(1);
+  auto sb_interlace_type = sandbox.malloc_in_sandbox<int>(1);
+
+  sandbox.invoke_sandbox_function(png_get_IHDR, png, info, sb_width, sb_height, sb_bit_depth, sb_color_type,
+               sb_interlace_type, NULL, NULL);
+  width = *(sb_width.unverified_safe_pointer_because(1, "Compatibility"));
+  height = *(sb_height.unverified_safe_pointer_because(1, "Compatibility"));
+  bit_depth = *(sb_bit_depth.unverified_safe_pointer_because(1, "Compatibility"));
+  color_type = *(sb_color_type.unverified_safe_pointer_because(1, "Compatibility"));
+  sb_interlace_type = *(sb_interlace_type.unverified_safe_pointer_because(1, "Compatibility"));
 
 
   /* Set up the data transformations you want.  Note that these are all
@@ -228,30 +250,32 @@ bool PngFormat::onLoad(FileOp* fop)
    */
 
   /* tell libpng to strip 16 bit/color files down to 8 bits/color */
-  png_set_strip_16(png);
+  sandbox.invoke_sandbox_function(png_set_strip_16, png);
 
   /* Extract multiple pixels with bit depths of 1, 2, and 4 from a single
    * byte into separate bytes (useful for paletted and grayscale images).
    */
-  png_set_packing(png);
+  sandbox.invoke_sandbox_function(png_set_packing, png);
 
   /* Expand grayscale images to the full 8 bits from 1, 2, or 4 bits/pixel */
   if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8)
-    png_set_expand_gray_1_2_4_to_8(png);
+    sandbox.invoke_sandbox_function(png_set_expand_gray_1_2_4_to_8, png);
 
   /* Turn on interlace handling.  REQUIRED if you are not using
    * png_read_image().  To see how to handle interlacing passes,
    * see the png_read_row() method below:
    */
-  int number_passes = png_set_interlace_handling(png);
+  int number_passes = sandbox.invoke_sandbox_function(png_set_interlace_handling, png).copy_and_verify([] (int thing) {
+	return thing;
+  });
 
   /* Optional call to gamma correct and add the background to the palette
    * and update info structure.
    */
-  png_read_update_info(png, info);
+  sandbox.invoke_sandbox_function(png_read_update_info, png, info);
 
   /* create the output image */
-  switch (png_get_color_type(png, info)) {
+  switch (color_type) {
 
     case PNG_COLOR_TYPE_RGB_ALPHA:
       fop->sequenceSetHasAlpha(true);
@@ -274,8 +298,14 @@ bool PngFormat::onLoad(FileOp* fop)
       return false;
   }
 
-  int imageWidth = png_get_image_width(png, info);
-  int imageHeight = png_get_image_height(png, info);
+  int imageWidth = sandbox.invoke_sandbox_function(png_get_image_width, png, info).copy_and_verify([] (int thing) {
+	return thing;
+  });
+  
+  int imageHeight = sandbox.invoke_sandbox_function(png_get_image_height, png, info).copy_and_verify([](int thing) {
+	return thing;		  
+  });
+  
   Image* image = fop->sequenceImage(pixelFormat, imageWidth, imageHeight);
   if (!image) {
     fop->setError("file_sequence_image %dx%d\n", imageWidth, imageHeight);
@@ -284,10 +314,18 @@ bool PngFormat::onLoad(FileOp* fop)
 
   // Transparent color
   png_color_16p png_trans_color = NULL;
+  auto png_trans_color_ptr = sandbox.malloc_in_sandbox<png_color_16p>(1);
+
 
   // Read the palette
-  if (png_get_color_type(png, info) == PNG_COLOR_TYPE_PALETTE &&
-      png_get_PLTE(png, info, &palette, &num_palette)) {
+  auto sb_palette = sandbox.malloc_in_sandbox<png_colorp>(1);
+  auto sb_num_palette = sandbox.malloc_in_sandbox<int>(1);
+  if (color_type == PNG_COLOR_TYPE_PALETTE &&
+
+      sandbox.invoke_sandbox_function(png_get_PLTE, png, info, sb_palette, sb_num_palette)) {
+    
+    palette = *(sb_palette.unverified_safe_pointer_because(1, "Compatibility"));
+    num_palette = *(sb_num_palette.unverified_safe_pointer_because(1, "Compatibility"));  
     fop->sequenceSetNColors(num_palette);
 
     for (int c=0; c<num_palette; ++c) {
@@ -301,8 +339,12 @@ bool PngFormat::onLoad(FileOp* fop)
     png_bytep trans = NULL;     // Transparent palette entries
     int num_trans = 0;
     int mask_entry = -1;
+    auto num_trans_ptr = sandbox.malloc_in_sandbox<int>(1);
+    auto trans_ptr = sandbox.malloc_in_sandbox<png_bytep>(1);
 
-    png_get_tRNS(png, info, &trans, &num_trans, nullptr);
+    sandbox.invoke_sandbox_function(png_get_tRNS, png, info, trans_ptr, num_trans_ptr, nullptr);
+    num_trans = *(num_trans_ptr.unverified_safe_pointer_because(1, "Compatibility"));
+    png_bytep trans = *(trans_ptr.unverified_safe_pointer_because(1, "Compatibility"));    
 
     for (int i = 0; i < num_trans; ++i) {
       fop->sequenceSetAlpha(i, trans[i]);
@@ -320,17 +362,19 @@ bool PngFormat::onLoad(FileOp* fop)
       fop->document()->sprite()->setTransparentColor(mask_entry);
   }
   else {
-    png_get_tRNS(png, info, nullptr, nullptr, &png_trans_color);
+    sandbox.invoke_sandbox_function(png_get_tRNS, png, info, nullptr, nullptr, png_trans_color_ptr);
+    png_trans_color = *(png_trans_color_ptr.unverified_safe_pointer_because(1, "compatibility"));
   }
 
-  // Allocate the memory to hold the image using the fields of info.
-  rows_pointer = (png_bytepp)png_malloc(png, sizeof(png_bytep) * height);
+  auto rows_pointer = sandbox.malloc_in_sandbox<png_bytep>(height);
+  size_t numRowBytes = sandbox.invoke_sandbox_function(png_get_rowbytes, png, info);
   for (y = 0; y < height; y++)
-    rows_pointer[y] = (png_bytep)png_malloc(png, png_get_rowbytes(png, info));
+    rows_pointer[y] = sandbox.malloc_in_sandbox<png_byte>(numRowBytes);
 
   for (int pass=0; pass<number_passes; ++pass) {
     for (y = 0; y < height; y++) {
-      png_read_rows(png, rows_pointer+y, nullptr, 1);
+   
+      sandbox.invoke_sandbox_function(png_read_rows, png, rows_pointer+y, nullptr, 1);
 
       fop->setProgress(
         (double)((double)pass + (double)(y+1) / (double)(height))
@@ -341,11 +385,14 @@ bool PngFormat::onLoad(FileOp* fop)
     }
   }
 
+  // Unwrap
+
   // Convert rows_pointer into the doc::Image
   for (y = 0; y < height; y++) {
     // RGB_ALPHA
-    if (png_get_color_type(png, info) == PNG_COLOR_TYPE_RGB_ALPHA) {
-      uint8_t* src_address = rows_pointer[y];
+    auto unwrap_row_ptr = rows_pointer[y].unverified_safe_pointer_because(numRowBytes, "Compatibility");
+    if (color_type == PNG_COLOR_TYPE_RGB_ALPHA) {
+      uint8_t* src_address = unwrap_row_ptr;
       uint32_t* dst_address = (uint32_t*)image->getPixelAddress(0, y);
       unsigned int x, r, g, b, a;
 
@@ -358,8 +405,8 @@ bool PngFormat::onLoad(FileOp* fop)
       }
     }
     // RGB
-    else if (png_get_color_type(png, info) == PNG_COLOR_TYPE_RGB) {
-      uint8_t* src_address = rows_pointer[y];
+    else if (color_type == PNG_COLOR_TYPE_RGB) {
+      uint8_t* src_address = unwrap_row_ptr;
       uint32_t* dst_address = (uint32_t*)image->getPixelAddress(0, y);
       unsigned int x, r, g, b, a;
 
@@ -384,8 +431,8 @@ bool PngFormat::onLoad(FileOp* fop)
       }
     }
     // GRAY_ALPHA
-    else if (png_get_color_type(png, info) == PNG_COLOR_TYPE_GRAY_ALPHA) {
-      uint8_t* src_address = rows_pointer[y];
+    else if (color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
+      uint8_t* src_address = unwrap_row_ptr;
       uint16_t* dst_address = (uint16_t*)image->getPixelAddress(0, y);
       unsigned int x, k, a;
 
@@ -396,8 +443,8 @@ bool PngFormat::onLoad(FileOp* fop)
       }
     }
     // GRAY
-    else if (png_get_color_type(png, info) == PNG_COLOR_TYPE_GRAY) {
-      uint8_t* src_address = rows_pointer[y];
+    else if (color_type == PNG_COLOR_TYPE_GRAY) {
+      uint8_t* src_address = unwrap_row_ptr;
       uint16_t* dst_address = (uint16_t*)image->getPixelAddress(0, y);
       unsigned int x, k, a;
 
@@ -418,17 +465,17 @@ bool PngFormat::onLoad(FileOp* fop)
       }
     }
     // PALETTE
-    else if (png_get_color_type(png, info) == PNG_COLOR_TYPE_PALETTE) {
-      uint8_t* src_address = rows_pointer[y];
+    else if (color_type == PNG_COLOR_TYPE_PALETTE) {
+      uint8_t* src_address = unwrap_row_ptr;
       uint8_t* dst_address = (uint8_t*)image->getPixelAddress(0, y);
       unsigned int x;
 
       for (x=0; x<width; x++)
         *(dst_address++) = *(src_address++);
     }
-    png_free(png, rows_pointer[y]);
+    sandbox.free_in_sandbox(rows_pointer[y]);
   }
-  png_free(png, rows_pointer);
+  sandbox.free_in_sandbox(rows_pointer);
 
   // Setup the color space.
   auto colorSpace = PngFormat::loadColorSpace(png, info);
@@ -549,7 +596,10 @@ bool PngFormat::onSave(FileOp* fop)
   if (setjmp(png_jmpbuf(png)))
     return false;
 
-  png_init_io(png, fp);
+  auto opIndexPtr = sandbox.malloc_in_sandbox<int>(1);
+  *opIndexPtr = 1;
+
+  png_set_read_fn(png, sandbox_static_cast<void*>(opIndexPtr), read_data);
 
   const Image* image = fop->sequenceImage();
   switch (image->pixelFormat()) {
