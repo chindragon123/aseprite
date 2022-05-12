@@ -12,6 +12,7 @@
 #include "app/app.h"
 #include "app/cli/app_options.h"
 #include "app/console.h"
+#include "app/file/png_format.h"
 #include "app/resource_finder.h"
 #include "app/send_crash.h"
 #include "base/exception.h"
@@ -79,6 +80,9 @@ int app_main(int argc, char* argv[])
 
   // Initialize the random seed.
   std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
+  // initialize the sandbox
+  create_sandbox();
 
 #if LAF_WINDOWS
   CoInit com;                   // To create COM objects

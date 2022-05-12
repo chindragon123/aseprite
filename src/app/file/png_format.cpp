@@ -28,6 +28,18 @@
 
 #define PNG_TRACE(...) // TRACE
 
+rlbox::rlbox_sandbox<rlbox::rlbox_wasm2c_sandbox> sandbox;
+
+void create_sandbox() {
+  sandbox.create_sandbox("./libpng.so");
+  return;
+}
+
+void destroy_sandbox() {
+  sandbox.destroy_sandbox();
+  return;
+}
+
 namespace app {
 
 using namespace base;

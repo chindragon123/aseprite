@@ -21,4 +21,7 @@ namespace app {
 
 } // namespace app
 
+void create_sandbox();
+void destroy_sandbox();
+
 #endif
