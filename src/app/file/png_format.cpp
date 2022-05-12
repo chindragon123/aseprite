@@ -531,25 +531,38 @@ bool PngFormat::onSave(FileOp* fop)
 
   FileHandle handle(open_file_with_exception_sync_on_close(fop->filename(), "wb"));
   FILE* fp = handle.get();
+  auto sbfp = sandbox.malloc_in_sandbox<FILE>(1);
+  memcpy(sbfp.unverified_safe_pointer_because(1, "compatibility"), fp, sizeof(FILE));
 
-  png_structp png =
-    png_create_write_struct(PNG_LIBPNG_VER_STRING, (png_voidp)fop,
-                            report_png_error, report_png_error);
-  if (png == nullptr)
+  auto libVerStrSize = strlen(PNG_LIBPNG_VER_STRING);
+  auto sbLibVer = sandbox.malloc_in_sandbox<char>(libVerStrSize);
+  strncpy(sbLibVer.unverified_safe_pointer_because(libVerStrSize, "compatibility"), PNG_LIBPNG_VER_STRING, libVerStrSize);
+
+  //png_structp png =
+  //  png_create_write_struct(PNG_LIBPNG_VER_STRING, (png_voidp)fop,
+  //			    report_png_error, report_png_error);
+
+  auto tainted_png = sandbox.invoke_sandbox_function(png_create_write_struct, sbLibVer, (png_voidp)fop, reportErrorCallback, reportErrorCallback);
+
+  if (tainted_png.UNSAFE_unverified() == nullptr)
     return false;
 
   // Remove sRGB profile checks
-  png_set_option(png, PNG_SKIP_sRGB_CHECK_PROFILE, PNG_OPTION_ON);
+  //png_set_option(png, PNG_SKIP_sRGB_CHECK_PROFILE, PNG_OPTION_ON);
+  sandbox.invoke_sandbox_function(png_set_option, tainted_png, PNG_SKIP_sRGB_CHECK_PROFILE, PNG_OPTION_ON);
 
-  info = png_create_info_struct(png);
-  DestroyWritePng destroyer(png, info);
-  if (info == nullptr)
+  //info = png_create_info_struct(png);
+  auto tainted_info = sandbox.invoke_sandbox_function(png_create_info_struct, tainted_png);
+  DestroyWritePng destroyer(tainted_png.UNSAFE_unverified(), tainted_info.UNSAFE_unverified());
+
+  if (tainted_info.UNSAFE_unverified() == nullptr)
     return false;
 
-  if (setjmp(png_jmpbuf(png)))
+  if (setjmp(sandbox.invoke_sandbox_function(png_jmpbuf, tainted_png).UNSAFE_unverified()))
     return false;
 
-  png_init_io(png, fp);
+  //png_init_io(png, fp);
+  sandbox.invoke_sandbox_function(png_init_io, tainted_png, sbfp);
 
   const Image* image = fop->sequenceImage();
   switch (image->pixelFormat()) {
@@ -578,8 +591,9 @@ bool PngFormat::onSave(FileOp* fop)
   const png_uint_32 width = image->width();
   const png_uint_32 height = image->height();
 
-  png_set_IHDR(png, info, width, height, 8, color_type,
-               PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+  //png_set_IHDR(png, info, width, height, 8, color_type,
+  //             PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+  sandbox.invoke_sandbox_function(png_set_IHDR, tainted_png, tainted_info, width, height, 8, color_type, PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
 
   // User chunks
   auto opts = fop->formatOptionsOfDocument<PngOptions>();
@@ -604,12 +618,13 @@ bool PngFormat::onSave(FileOp* fop)
       unknown.location = chunk.location;
       ++i;
     }
-    png_set_unknown_chunks(png, info, &unknowns[0], num_unknowns);
+    //png_set_unknown_chunks(png, info, &unknowns[0], num_unknowns);
+    sandbox.invoke_sandbox_function(png_set_unknown_chunks, tainted_png, tainted_info, &unknowns[0], num_unknowns);
   }
 
   if (fop->preserveColorProfile() &&
       fop->document()->sprite()->colorSpace())
-    saveColorSpace(png, info, fop->document()->sprite()->colorSpace().get());
+    saveColorSpace(tainted_png.UNSAFE_unverified(), tainted_info.UNSAFE_unverified(), fop->document()->sprite()->colorSpace().get());
 
   if (color_type == PNG_COLOR_TYPE_PALETTE) {
     int c, r, g, b;
@@ -621,15 +636,17 @@ bool PngFormat::onSave(FileOp* fop)
 #endif
 
     // Save the color palette.
-    palette = (png_colorp)png_malloc(png, pal_size * sizeof(png_color));
+    //palette = (png_colorp)png_malloc(png, pal_size * sizeof(png_color));
+    auto tainted_palette = sandbox.invoke_sandbox_function(png_malloc, tainted_png, pal_size * sizeof(png_color));
+
     for (c = 0; c < pal_size; c++) {
       fop->sequenceGetColor(c, &r, &g, &b);
-      palette[c].red   = r;
-      palette[c].green = g;
-      palette[c].blue  = b;
+      tainted_palette[c].red   = r;
+      tainted_palette[c].green = g;
+      tainted_palette[c].blue  = b;
     }
 
-    png_set_PLTE(png, info, palette, pal_size);
+    sandbox.invoke_sandbox_function(png_set_PLTE, tainted_png, tainted_info, tainted_palette, pal_size);
 
     // If the sprite does not have a (visible) background layer, we
     // put alpha=0 to the transparent color.
@@ -641,31 +658,35 @@ bool PngFormat::onSave(FileOp* fop)
 
     bool all_opaque = true;
     int num_trans = pal_size;
-    png_bytep trans = (png_bytep)png_malloc(png, num_trans);
+    //png_bytep trans = (png_bytep)png_malloc(png, num_trans);
+    auto tainted_trans = sandbox.invoke_sandbox_function(png_malloc, tainted_png, num_trans);
 
     for (c=0; c<num_trans; ++c) {
       int alpha = 255;
       fop->sequenceGetAlpha(c, &alpha);
-      trans[c] = (c == mask_entry ? 0: alpha);
+      tainted_trans[c] = (c == mask_entry ? 0: alpha);
       if (alpha < 255)
         all_opaque = false;
     }
 
-    if (!all_opaque || mask_entry >= 0)
-      png_set_tRNS(png, info, trans, num_trans, nullptr);
 
-    png_free(png, trans);
+    if (!all_opaque || mask_entry >= 0)
+      sandbox.invoke_sandbox_function(png_set_tRNS, tainted_png, tainted_info, tainted_trans, num_trans, nullptr);
+
+    //png_free(png, trans);
+    sandbox.invoke_sandbox_function(png_free, tainted_png, tainted_trans);
   }
 
-  png_write_info(png, info);
-  png_set_packing(png);
+  sandbox.invoke_sandbox_function(png_write_info, tainted_png, tainted_info);
+  sandbox.invoke_sandbox_function(png_set_packing, tainted_png);
 
-  row_pointer = (png_bytep)png_malloc(png, png_get_rowbytes(png, info));
+  //row_pointer = (png_bytep)png_malloc(png, png_get_rowbytes(png, info));
+  auto tainted_row_pointer = sandbox.invoke_sandbox_function(png_malloc, tainted_png, sandbox.invoke_sandbox_function(png_get_rowbytes, tainted_png, tainted_info) );
 
   for (png_uint_32 y=0; y<height; ++y) {
-    uint8_t* dst_address = row_pointer;
+    uint8_t* dst_address = tainted_row_pointer.UNSAFE_unverified();
 
-    if (png_get_color_type(png, info) == PNG_COLOR_TYPE_RGB_ALPHA) {
+    if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_RGB_ALPHA) {
       unsigned int x, c, a;
       bool opaque = true;
 
@@ -716,7 +737,7 @@ bool PngFormat::onSave(FileOp* fop)
         }
       }
     }
-    else if (png_get_color_type(png, info) == PNG_COLOR_TYPE_RGB) {
+    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_RGB) {
       uint32_t* src_address = (uint32_t*)image->getPixelAddress(0, y);
       unsigned int x, c;
 
@@ -727,7 +748,7 @@ bool PngFormat::onSave(FileOp* fop)
         *(dst_address++) = rgba_getb(c);
       }
     }
-    else if (png_get_color_type(png, info) == PNG_COLOR_TYPE_GRAY_ALPHA) {
+    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_GRAY_ALPHA) {
       uint16_t* src_address = (uint16_t*)image->getPixelAddress(0, y);
       unsigned int x, c, a;
       bool opaque = true;
@@ -747,7 +768,7 @@ bool PngFormat::onSave(FileOp* fop)
         *(dst_address++) = a;
       }
     }
-    else if (png_get_color_type(png, info) == PNG_COLOR_TYPE_GRAY) {
+    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_GRAY) {
       uint16_t* src_address = (uint16_t*)image->getPixelAddress(0, y);
       unsigned int x, c;
 
@@ -756,7 +777,7 @@ bool PngFormat::onSave(FileOp* fop)
         *(dst_address++) = graya_getv(c);
       }
     }
-    else if (png_get_color_type(png, info) == PNG_COLOR_TYPE_PALETTE) {
+    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_PALETTE) {
       uint8_t* src_address = (uint8_t*)image->getPixelAddress(0, y);
       unsigned int x;
 
@@ -764,17 +785,18 @@ bool PngFormat::onSave(FileOp* fop)
         *(dst_address++) = *(src_address++);
     }
 
-    png_write_rows(png, &row_pointer, 1);
+    sandbox.invoke_sandbox_function(png_write_rows, tainted_png, &tainted_row_pointer, 1);
 
     fop->setProgress((double)(y+1) / (double)(height));
   }
 
-  png_free(png, row_pointer);
-  png_write_end(png, info);
+  // png_free(png, row_pointer);
+  sandbox.invoke_sandbox_function(png_free, tainted_png, tainted_row_pointer);
+  sandbox.invoke_sandbox_function(png_write_end, tainted_png, tainted_info);
 
   if (image->pixelFormat() == IMAGE_INDEXED) {
-    png_free(png, palette);
-    palette = nullptr;
+    sandbox.invoke_sandbox_function(png_free, tainted_png, tainted_palette);
+    tainted_palette = nullptr;
   }
 
   return true;
