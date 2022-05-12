@@ -10,6 +10,9 @@
 [submodule "third_party/libwebp"]
 	path = third_party/libwebp
 	url = https://github.com/aseprite/libwebp.git
+[submodule "third_party/libpng"]
+	path = third_party/libpng
+	url = https://github.com/aseprite/libpng.git
 [submodule "src/flic"]
 	path = src/flic
 	url = https://github.com/aseprite/flic.git
@@ -21,9 +24,6 @@
 	path = third_party/zlib
 	url = https://github.com/aseprite/zlib.git
 	ignore = dirty
-[submodule "third_party/libpng"]
-	path = third_party/libpng
-	url = https://github.com/aseprite/libpng.git
 [submodule "src/clip"]
 	path = src/clip
 	url = https://github.com/aseprite/clip.git

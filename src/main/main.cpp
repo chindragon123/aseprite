@@ -22,6 +22,7 @@
 #include "os/error.h"
 #include "os/system.h"
 #include "ver/info.h"
+#define RLBOX_SINGLE_THREADED_INVOCATIONS
 #include "rlbox_wasm2c_sandbox.hpp"
 #include "rlbox.hpp"
 

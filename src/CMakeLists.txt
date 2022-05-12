@@ -38,6 +38,9 @@ if(WIN32)
   include_directories(..)
 endif()
 
+include_directories(main/include)
+include_directories(main/include/wasm_sandbox)
+
 ######################################################################
 # With static libcurl
 
@@ -191,7 +194,8 @@ if(ENABLE_ASEPRITE_EXE)
       set_target_properties(${main_target} PROPERTIES WIN32_EXECUTABLE true)
     endif()
   endif()
-  set_target_properties(${main_target} PROPERTIES LINK_FLAGS "${LAF_BACKEND_LINK_FLAGS}")
+  set(LINK_FL ${LAF_BACKEND_LINK_FLAGS} "-ldl -lrt -pthread")
+  set_target_properties(${main_target} PROPERTIES LINK_FLAGS "${LINK_FL}")
   target_link_libraries(${main_target} app-lib)
   add_dependencies(${main_target} copy_data)
 
