@@ -22,6 +22,8 @@
 #include "os/error.h"
 #include "os/system.h"
 #include "ver/info.h"
+#include "rlbox_wasm2c_sandbox.hpp"
+#include "rlbox.hpp"
 
 #if ENABLE_SENTRY
   #include "app/sentry_wrapper.h"
