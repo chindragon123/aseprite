@@ -71,9 +71,42 @@ FileFormat* CreatePngFormat()
   return new PngFormat;
 }
 
-static void report_png_error(png_structp png, png_const_charp error)
+static void report_png_error(rlbox::rlbox_sandbox<rlbox::rlbox_wasm2c_sandbox>& _, 
+                              rlbox::tainted<png_structp, rlbox::rlbox_wasm2c_sandbox> png, 
+                              rlbox::tainted<png_const_charp, rlbox::rlbox_wasm2c_sandbox> error)
 {
-  ((FileOp*)png_get_error_ptr(png))->setError("libpng: %s\n", error);
+//   size_t png_size = sizeof(png) + 1;
+//   auto tainted_png = sandbox.malloc_in_sandbox<char>(png_size);
+//   memcpy(tainted_png.UNSAFE_unverified(), &png, png_size);
+  auto png_error_ptr = sandbox.invoke_sandbox_function(png_get_error_ptr, png).copy_and_verify([](png_voidp val) {
+    return val;
+  })
+  ((FileOp*)png_error_ptr)->setError("libpng: %s\n", error);
+
+  // sandbox.free_in_sandbox(tainted_png);
+}
+
+void read_data_fn(rlbox::rlbox_sandbox<rlbox::rlbox_wasm2c_sandbox>& _,
+                  rlbox::tainted<png_structp, rlbox::rlbox_wasm2c_sandbox> tainted_png,
+                  rlbox::tainted<png_bytep, rlbox::rlbox_wasm2c_sandbox> tainted_png_byte,
+                  size_t size) 
+{
+    png_bytep png_byte = tainted_png_byte.UNSAFE_unverified();
+
+    auto fp = sandbox.invoke_sandbox_function(png_get_io_ptr, tainted_png).copy_and_verify([](png_FILE_p val) {
+      return val;
+    })
+
+    size_t result = fread(png_byte, 1, size, fp);
+
+    if (result != size){
+        const char* error_msg = "read error in read_data_memory";
+        size_t error_msg_size = strlen(error_msg) + 1;
+        auto tainted_msg = sandbox.malloc_in_sandbox<char>(error_msg_size);
+        std::strncpy(tainted_msg.UNSAFE_unverified(), error_msg, error_msg_size);
+
+        sandbox.invoke_sandbox_function(png_error, tainted_png, tainted_msg);
+    }
 }
 
 // TODO this should be information in FileOp parameter of onSave()
@@ -96,8 +129,7 @@ class DestroyReadPng {
   png_infop info;
 public:
   DestroyReadPng(png_structp png, png_infop info) : png(png), info(info) { }
-  ~DestroyReadPng() {
-    png_destroy_read_struct(&png, info ? &info: nullptr, nullptr);
+    sandbox.invoke_sandbox_function(png_destroy_read_struct, &png, info ? &info: nullptr, nullptr);
   }
 };
 
@@ -107,7 +139,7 @@ class DestroyWritePng {
 public:
   DestroyWritePng(png_structp png, png_infop info) : png(png), info(info) { }
   ~DestroyWritePng() {
-    png_destroy_write_struct(&png, info ? &info: nullptr);
+    sandbox.invoke_sandbox_function(png_destroy_write_struct, &png, info ? &info: nullptr, nullptr);
   }
 };
 
@@ -126,9 +158,18 @@ png_fixed_point png_ftofix(float x)
   return x * 100000.0f;
 }
 
-int png_user_chunk(png_structp png, png_unknown_chunkp unknown)
+int png_user_chunk(rlbox::rlbox_sandbox<rlbox::rlbox_wasm2c_sandbox>& _, 
+                              rlbox::tainted<png_structp, rlbox::rlbox_wasm2c_sandbox> png,
+                              rlbox::tainted<png_unknown_chunkp, rlbox::rlbox_wasm2c_sandbox> unknown)
 {
-  auto data = (std::shared_ptr<PngOptions>*)png_get_user_chunk_ptr(png);
+  // size_t png_size = sizeof(png) + 1;
+  // auto tainted_png = sandbox.malloc_in_sandbox<char>(png_size);
+  // memcpy(tainted_png.UNSAFE_unverified(), &png, png_size);
+  auto png_user_chunk_ptr = sandbox.invoke_sandbox_function(png_get_user_chunk_ptr, png).copy_and_verify([](png_voidp val) {
+    return val;
+  })
+
+  auto data = (std::shared_ptr<PngOptions>*)png_user_chunk_ptr;
   std::shared_ptr<PngOptions>& opts = *data;
 
   PNG_TRACE("PNG: Read unknown chunk '%c%c%c%c'\n",
@@ -148,6 +189,8 @@ int png_user_chunk(png_structp png, png_unknown_chunkp unknown)
               chunk.data.begin());
   }
   opts->addChunk(std::move(chunk));
+
+  // sandbox.free_in_sandbox(tainted_png);
 
   return 1;
 }
@@ -457,7 +500,7 @@ bool PngFormat::onLoad(FileOp* fop)
 //
 // Code to read color spaces from png files from Skia (SkPngCodec.cpp)
 // by Google Inc.
-gfx::ColorSpaceRef PngFormat::loadColorSpace(png_structp png_ptr, png_infop info_ptr)
+gfx::ColorSpaceRef PngFormat::loadColorSpace(rlbox::tainted<png_structp, rlbox::rlbox_wasm2c_sandbox> png_ptr, rlbox::tainted<png_infop, rlbox::rlbox_wasm2c_sandbox> info_ptr)
 {
   // First check for an ICC profile
   png_bytep profile;
@@ -470,9 +513,42 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(png_structp png_ptr, png_infop info
   //   (1) libpng has already decompressed the profile for us.
   //   (2) "deflate" is the only mode of decompression that libpng supports.
   int compression;
-  if (PNG_INFO_iCCP == png_get_iCCP(png_ptr, info_ptr,
-                                    &name, &compression,
-                                    &profile, &length)) {
+
+  // size_t png_size = sizeof(png_ptr) + 1;
+  // auto tainted_png = sandbox.malloc_in_sandbox<char>(png_size);
+  // memcpy(tainted_png.UNSAFE_unverified(), &png_ptr, png_size);
+
+  // size_t info_size = sizeof(info_ptr) + 1;
+  // auto tainted_info = sandbox.malloc_in_sandbox<char>(info_size);
+  // memcpy(tainted_info.UNSAFE_unverified(), &info_ptr, info_size);
+
+  size_t profile_size = sizeof(profile) + 1;
+  auto tainted_profile = sandbox.malloc_in_sandbox<char>(profile_size);
+  memcpy(tainted_profile.UNSAFE_unverified(), &profile, profile_size);
+
+  size_t length_size = sizeof(length) + 1;
+  auto tainted_length = sandbox.malloc_in_sandbox<char>(length_size);
+  memcpy(tainted_length.UNSAFE_unverified(), &length, length_size);
+
+  size_t name_size = sizeof(name) + 1;
+  auto tainted_name = sandbox.malloc_in_sandbox<char>(name_size);
+  memcpy(tainted_name.UNSAFE_unverified(), &name, name_size);
+
+  size_t compression_size = sizeof(compression) + 1;
+  auto tainted_compression = sandbox.malloc_in_sandbox<char>(compression_size);
+  memcpy(tainted_compression.UNSAFE_unverified(), &compression, compression_size);
+
+  auto png_iCCP = sandbox.invoke_sandbox_function(png_get_iCCP, png, info, tainted_name, tainted_compression, tainted_profile, tainted_length).copy_and_verify([](png_uint_32 val) {
+    return val;
+  })
+
+  profile = *(tainted_profile.UNSAFE_unverified());
+  length = *(tainted_length.UNSAFE_unverified());
+  name = *(tainted_name.UNSAFE_unverified());
+  compression = *(tainted_compression.UNSAFE_unverified());
+
+
+  if (PNG_INFO_iCCP == png_iCCP) {
     auto colorSpace = gfx::ColorSpace::MakeICC(profile, length);
     if (name)
       colorSpace->setName(name);
@@ -480,23 +556,85 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(png_structp png_ptr, png_infop info
   }
 
   // Second, check for sRGB.
-  if (png_get_valid(png_ptr, info_ptr, PNG_INFO_sRGB)) {
+
+  auto png_valid = sandbox.invoke_sandbox_function(png_get_valid, png, info, PNG_INFO_sRGB).copy_and_verify([](png_uint_32 val) {
+    return val;
+  })
+
+  if (png_valid) {
     // sRGB chunks also store a rendering intent: Absolute, Relative,
     // Perceptual, and Saturation.
     return gfx::ColorSpace::MakeSRGB();
   }
 
+
+
   // Next, check for chromaticities.
   png_fixed_point wx, wy, rx, ry, gx, gy, bx, by, invGamma;
-  if (png_get_cHRM_fixed(png_ptr, info_ptr,
-                         &wx, &wy, &rx, &ry, &gx, &gy, &bx, &by)) {
+
+  size_t wx_size = sizeof(wx) + 1;
+  auto tainted_wx = sandbox.malloc_in_sandbox<char>(wx);
+  memcpy(tainted_wx.UNSAFE_unverified(), &wx, wx_size);
+
+  size_t wy_size = sizeof(wy) + 1;
+  auto tainted_wy = sandbox.malloc_in_sandbox<char>(wy);
+  memcpy(tainted_wy.UNSAFE_unverified(), &wy, wy_size)
+
+  size_t rx_size = sizeof(rx) + 1;
+  auto tainted_rx = sandbox.malloc_in_sandbox<char>(rx);
+  memcpy(tainted_rx.UNSAFE_unverified(), &rx, rx_size)
+
+  size_t ry_size = sizeof(ry) + 1;
+  auto tainted_ry = sandbox.malloc_in_sandbox<char>(ry);
+  memcpy(tainted_ry.UNSAFE_unverified(), &ry, ry_size)
+
+  size_t gx_size = sizeof(gx) + 1;
+  auto tainted_gx = sandbox.malloc_in_sandbox<char>(gx);
+  memcpy(tainted_gx.UNSAFE_unverified(), &gx, gx_size)
+
+  size_t gy_size = sizeof(gy) + 1;
+  auto tainted_gy = sandbox.malloc_in_sandbox<char>(gy);
+  memcpy(tainted_gy.UNSAFE_unverified(), &gy, gy_size)
+
+  size_t bx_size = sizeof(bx) + 1;
+  auto tainted_bx = sandbox.malloc_in_sandbox<char>(bx);
+  memcpy(tainted_bx.UNSAFE_unverified(), &bx, bx_size)
+
+  size_t by_size = sizeof(by) + 1;
+  auto tainted_by = sandbox.malloc_in_sandbox<char>(by);
+  memcpy(tainted_by.UNSAFE_unverified(), &by, by_size)
+
+  size_t invGamma_size = sizeof(invGamma) + 1;
+  auto tainted_invGamma = sandbox.malloc_in_sandbox<char>(invGamma);
+  memcpy(tainted_invGamma.UNSAFE_unverified(), &invGamma, invGamma_size)
+
+  auto png_cHRM_fixed = sandbox.invoke_sandbox_function(png_get_cHRM_fixed, png_ptr, info_ptr, tainted_wx, tainted_wy, tainted_rx, tainted_ry, tainted_gx, tainted_gy, tainted_bx, tainted_by).copy_and_verify([](png_uint_32 val) {
+    return val;
+  })
+
+  wx = *(tainted_wx.UNSAFE_unverified());
+  wy = *(tainted_wy.UNSAFE_unverified());
+  rx = *(tainted_rx.UNSAFE_unverified());
+  ry = *(tainted_ry.UNSAFE_unverified());
+  gx = *(tainted_gx.UNSAFE_unverified());
+  gy = *(tainted_gy.UNSAFE_unverified());
+  bx = *(tainted_bx.UNSAFE_unverified());
+  by = *(tainted_by.UNSAFE_unverified());
+
+  if (png_cHRM_fixed) {
     gfx::ColorSpacePrimaries primaries;
     primaries.wx = png_fixtof(wx); primaries.wy = png_fixtof(wy);
     primaries.rx = png_fixtof(rx); primaries.ry = png_fixtof(ry);
     primaries.gx = png_fixtof(gx); primaries.gy = png_fixtof(gy);
     primaries.bx = png_fixtof(bx); primaries.by = png_fixtof(by);
 
-    if (PNG_INFO_gAMA == png_get_gAMA_fixed(png_ptr, info_ptr, &invGamma)) {
+    auto png_gAMA_fixed = sandbox.invoke_sandbox_function(png_get_cHRM_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {
+      return val;
+    })
+
+    invGamma = *(tainted_invGamma.UNSAFE_unverified());
+
+    if (PNG_INFO_gAMA == png_gAMA_fixed) {
       gfx::ColorSpaceTransferFn fn;
       fn.a = 1.0f;
       fn.b = fn.c = fn.d = fn.e = fn.f = 0.0f;
@@ -515,6 +653,19 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(png_structp png_ptr, png_infop info
     // Since there is no cHRM, we will guess sRGB gamut.
     return gfx::ColorSpace::MakeSRGBWithGamma(1.0f / png_fixtof(invGamma));
   }
+
+  sandbox.free_in_sandbox(tainted_profile);
+  sandbox.free_in_sandbox(tainted_length);
+  sandbox.free_in_sandbox(tainted_name);
+  sandbox.free_in_sandbox(tainted_compression);
+  sandbox.free_in_sandbox(tainted_wx);
+  sandbox.free_in_sandbox(tainted_wy);
+  sandbox.free_in_sandbox(tainted_rx);
+  sandbox.free_in_sandbox(tainted_ry);
+  sandbox.free_in_sandbox(tainted_gx);
+  sandbox.free_in_sandbox(tainted_gy);
+  sandbox.free_in_sandbox(tainted_bx);
+  sandbox.free_in_sandbox(tainted_by);
 
   // No color space.
   return nullptr;
@@ -801,15 +952,16 @@ void PngFormat::saveColorSpace(png_structp png_ptr, png_infop info_ptr,
     case gfx::ColorSpace::RGB: {
       if (colorSpace->hasPrimaries()) {
         const gfx::ColorSpacePrimaries* p = colorSpace->primaries();
-        png_set_cHRM_fixed(png_ptr, info_ptr,
-                           png_ftofix(p->wx), png_ftofix(p->wy),
-                           png_ftofix(p->rx), png_ftofix(p->ry),
-                           png_ftofix(p->gx), png_ftofix(p->gy),
-                           png_ftofix(p->bx), png_ftofix(p->by));
+
+        sandbox.invoke_sandbox_function(png_set_cHRM_fixed, png_ptr, info_ptr,
+                                        png_ftofix(p->wx), png_ftofix(p->wy),
+                                        png_ftofix(p->rx), png_ftofix(p->ry),
+                                        png_ftofix(p->gx), png_ftofix(p->gy),
+                                        png_ftofix(p->bx), png_ftofix(p->by));
+
       }
       if (colorSpace->hasGamma()) {
-        png_set_gAMA_fixed(png_ptr, info_ptr,
-                           png_ftofix(1.0f / colorSpace->gamma()));
+        sandbox.invoke_sandbox_function(png_set_gAMA_fixed, png_ptr, info_ptr,png_ftofix(1.0f / colorSpace->gamma()));
       }
       break;
     }
