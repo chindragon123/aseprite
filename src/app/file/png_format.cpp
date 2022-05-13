@@ -128,6 +128,29 @@ void read_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
     }
 }
 
+void write_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
+                  tainted<png_structp, rlbox_wasm2c_sandbox> tainted_png,
+                  tainted<png_bytep, rlbox_wasm2c_sandbox> tainted_png_byte,
+                  tainted<size_t, rlbox_wasm2c_sandbox> size) 
+{
+    //TODO: Update to take account for image length
+    png_bytep png_byte = tainted_png_byte.unverified_safe_pointer_because(1, "Compatibility");
+
+    auto fp = sandbox.lookup_app_ptr(sandbox_static_cast<FILE*>(sandbox.invoke_sandbox_function(png_get_io_ptr, tainted_png)));
+
+    auto uwrSize = size.UNSAFE_unverified();
+    size_t result = fwrite(png_byte, 1, uwrSize, fp);
+
+    if (result != uwrSize){
+        const char* error_msg = "read error in read_data_memory";
+        size_t error_msg_size = strlen(error_msg) + 1;
+        auto tainted_msg = sandbox.malloc_in_sandbox<char>(error_msg_size);
+        std::strncpy(tainted_msg.UNSAFE_unverified(), error_msg, error_msg_size);
+
+        sandbox.invoke_sandbox_function(png_error, tainted_png, tainted_msg);
+    }
+}
+
 // TODO this should be information in FileOp parameter of onSave()
 static bool fix_one_alpha_pixel = false;
 
