@@ -108,7 +108,7 @@ static void report_png_error(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
 void read_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
                   tainted<png_structp, rlbox_wasm2c_sandbox> tainted_png,
                   tainted<png_bytep, rlbox_wasm2c_sandbox> tainted_png_byte,
-                  size_t size) 
+                  tainted<size_t, rlbox_wasm2c_sandbox> size) 
 {
     //TODO: Update to take account for image length
     png_bytep png_byte = tainted_png_byte.unverified_safe_pointer_because(1, "Compatibility");
@@ -120,9 +120,10 @@ void read_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
     //TODO: Change FP to point to actual file later
     FILE* fp = NULL;
 
-    size_t result = fread(png_byte, 1, size, fp);
+    auto uwrSize = size.UNSAFE_unverified();
+    size_t result = fread(png_byte, 1, uwrSize, fp);
 
-    if (result != size){
+    if (result != uwrSize){
         const char* error_msg = "read error in read_data_memory";
         size_t error_msg_size = strlen(error_msg) + 1;
         auto tainted_msg = sandbox.malloc_in_sandbox<char>(error_msg_size);
@@ -183,7 +184,7 @@ png_fixed_point png_ftofix(float x)
   return x * 100000.0f;
 }
 
-int png_user_chunk(rlbox_sandbox<rlbox_wasm2c_sandbox>& _, 
+tainted<int, rlbox_wasm2c_sandbox> png_user_chunk(rlbox_sandbox<rlbox_wasm2c_sandbox>& _, 
                               tainted<png_structp, rlbox_wasm2c_sandbox> png,
                               tainted<png_unknown_chunkp, rlbox_wasm2c_sandbox> unknown)
 {
@@ -243,8 +244,9 @@ bool PngFormat::onLoad(FileOp* fop)
    */
  
   auto libVerStrSize = strlen(PNG_LIBPNG_VER_STRING);
-  auto sbLibVer = sandbox.malloc_in_sandbox<char>(libVerStrSize);
+  auto sbLibVer = sandbox.malloc_in_sandbox<char>(libVerStrSize + 1);
   strncpy(sbLibVer.unverified_safe_pointer_because(libVerStrSize, "compatibility"), PNG_LIBPNG_VER_STRING, libVerStrSize);
+  auto userChunkCb = sandbox.register_callback(png_user_chunk);
 
   tainted<png_structp, rlbox_wasm2c_sandbox> png =
   sandbox.invoke_sandbox_function(png_create_read_struct, sbLibVer, nullptr,
@@ -252,6 +254,7 @@ bool PngFormat::onLoad(FileOp* fop)
   auto pngCheckPtr = png.unverified_safe_pointer_because(1, "Compatibility");
   if (pngCheckPtr == nullptr) {
     fop->setError("png_create_read_struct\n");
+    userChunkCb.unregister();
     return false;
   }
 
@@ -263,7 +266,8 @@ bool PngFormat::onLoad(FileOp* fop)
   // Set a function to read user data chunks
   auto opts = std::make_shared<PngOptions>();
   //TODO: Make user chunk fn compatible
-  //png_set_read_user_chunk_fn(png, nullptr, png_user_chunk);
+  auto sdf = sandbox.malloc_in_sandbox<int>(1);
+  sandbox.invoke_sandbox_function(png_set_read_user_chunk_fn, png, nullptr, userChunkCb);
 
   /* Allocate/initialize the memory for image information. */
   tainted<png_infop, rlbox_wasm2c_sandbox> info = sandbox.invoke_sandbox_function(png_create_info_struct, png);
@@ -271,6 +275,7 @@ bool PngFormat::onLoad(FileOp* fop)
   DestroyReadPng destroyer(png, info);
   if (infoCheckPtr == nullptr) {
     fop->setError("png_create_info_struct\n");
+    userChunkCb.unregister();
     return false;
   }
 
@@ -284,7 +289,8 @@ bool PngFormat::onLoad(FileOp* fop)
   }
   */
 
-
+  auto readDataCb = sandbox.register_callback(read_data_fn);
+  sandbox.invoke_sandbox_function(png_set_read_fn, png, nullptr, readDataCb);
 
   /* If we have already read some of the signature */
   sandbox.invoke_sandbox_function(png_set_sig_bytes, png, sig_read);
@@ -361,6 +367,8 @@ bool PngFormat::onLoad(FileOp* fop)
 
     default:
       fop->setError("Color type not supported\n)");
+      readDataCb.unregister();
+      userChunkCb.unregister();
       return false;
   }
 
@@ -375,6 +383,8 @@ bool PngFormat::onLoad(FileOp* fop)
   Image* image = fop->sequenceImage(pixelFormat, imageWidth, imageHeight);
   if (!image) {
     fop->setError("file_sequence_image %dx%d\n", imageWidth, imageHeight);
+    userChunkCb.unregister();
+    readDataCb.unregister();
     return false;
   }
 
@@ -564,6 +574,8 @@ bool PngFormat::onLoad(FileOp* fop)
   if (!opts->isEmpty())
     fop->setLoadedFormatOptions(opts);
 
+  readDataCb.unregister();
+  userChunkCb.unregister();
   return true;
 }
 
