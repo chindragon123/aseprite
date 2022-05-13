@@ -623,13 +623,16 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   auto tainted_compression = sandbox.malloc_in_sandbox<int>(1);
 
   auto png_iCCP = sandbox.invoke_sandbox_function(png_get_iCCP, png_ptr, info_ptr, tainted_name, tainted_compression, tainted_profile, tainted_length).copy_and_verify([](png_uint_32 val) {
+    if (val != PNG_INFO_iCCP && val != 0) {
+      exit(1);
+    }
     return val;
   });
 
 
-  profile = *((png_bytep*) tainted_profile.copy_and_verify_address([](uintptr_t addr) {return addr;}));
+  profile = *((png_bytep*) tainted_profile.copy_and_verify_address([](uintptr_t addr) {if (addr == NULL) exit(1); return addr;}));
   length = *(tainted_length.unverified_safe_pointer_because(1, "compat"));
-  name = *((char**) tainted_name.copy_and_verify_address([](uintptr_t addr) {return addr;}));
+  name = *((char**) tainted_name.copy_and_verify_address([](uintptr_t addr) {if (addr == NULL) exit(1); return addr;}));
   compression = *(tainted_compression.unverified_safe_pointer_because(1, "compat"));
 
 
@@ -643,6 +646,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   // Second, check for sRGB.
 
   auto png_valid = sandbox.invoke_sandbox_function(png_get_valid, png_ptr, info_ptr, PNG_INFO_sRGB).copy_and_verify([](png_uint_32 val) {
+    if (val != 0 && ((val & ~PNG_INFO_sRGB) != 0)) {
+      exit(1);
+    }
     return val;
   });
 
@@ -669,7 +675,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   auto tainted_invGamma = sandbox.malloc_in_sandbox<int>(1);
 
   auto png_cHRM_fixed = sandbox.invoke_sandbox_function(png_get_cHRM_fixed, png_ptr, info_ptr, tainted_wx, tainted_wy, tainted_rx, tainted_ry, tainted_gx, tainted_gy, tainted_bx, tainted_by).copy_and_verify([](png_uint_32 val) {
-    return val;
+    if (val != PNG_INFO_cHRM && val != 0) {
+        exit(1);
+      }
   });
 
   wx = *(tainted_wx.UNSAFE_unverified());
@@ -689,7 +697,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
     primaries.bx = png_fixtof(bx); primaries.by = png_fixtof(by);
 
     auto png_gAMA_fixed = sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {
-      return val;
+      if (val != PNG_INFO_gAMA && val != 0) {
+        exit(1);
+      }
     });
 
     invGamma = *(tainted_invGamma.UNSAFE_unverified());
@@ -709,7 +719,12 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   }
 
   // Last, check for gamma.
-  if (PNG_INFO_gAMA == sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {return val;})) {
+  if (PNG_INFO_gAMA == sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {
+    if (val != PNG_INFO_gAMA && val != 0) {
+        exit(1);
+    }
+    return val;
+  })) {
     // Since there is no cHRM, we will guess sRGB gamut.
     return gfx::ColorSpace::MakeSRGBWithGamma(1.0f / png_fixtof(invGamma));
   }
