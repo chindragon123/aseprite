@@ -172,7 +172,22 @@ class DestroyReadPng {
 public:
   DestroyReadPng(tainted<png_structp, rlbox_wasm2c_sandbox> png, tainted<png_infop, rlbox_wasm2c_sandbox> info) : png(png), info(info) { }
   ~DestroyReadPng() {  
-	sandbox.invoke_sandbox_function(png_destroy_read_struct, nullptr, nullptr, nullptr);
+
+    tainted<png_structp**, rlbox_wasm2c_sandbox> tainted_png_ptr_ptr = sandbox.malloc_in_sandbox<png_structp**>(1);
+    tainted_png_png_ptr[0] = png;
+
+    tainted<png_infop**, rlbox_wasm2c_sandbox> tainted_info_ptr_ptr = nullptr;
+    if (info) {
+      tainted_info_ptr_ptr = sandbox.malloc_in_sandbox<png_infop**>(1);
+      tainted_info_ptr_ptr[0] = info;
+    }
+
+    sandbox.invoke_sandbox_function(png_destroy_read_struct, tainted_png_ptr_ptr, tainted_info_ptr_ptr, nullptr);
+
+    sandbox.free_in_sandbox<png_structp**>(tainted_png_ptr_ptr);
+    if (info) {
+      sandbox.free_in_sandbox<png_structp**>(info_png_ptr_ptr);
+    }
   }
 };
 
@@ -183,7 +198,21 @@ public:
   DestroyWritePng(tainted<png_structp, rlbox_wasm2c_sandbox> png, tainted<png_infop, rlbox_wasm2c_sandbox> info) : png(png), info(info) { }
   ~DestroyWritePng() {
 
-    sandbox.invoke_sandbox_function(png_destroy_write_struct, nullptr, nullptr);
+    tainted<png_structp**, rlbox_wasm2c_sandbox> tainted_png_ptr_ptr = sandbox.malloc_in_sandbox<png_structp**>(1);
+    tainted_png_png_ptr[0] = png;
+
+    tainted<png_infop**, rlbox_wasm2c_sandbox> tainted_info_ptr_ptr = nullptr;
+    if (info) {
+      tainted_info_ptr_ptr = sandbox.malloc_in_sandbox<png_infop**>(1);
+      tainted_info_ptr_ptr[0] = info;
+    }
+
+    sandbox.invoke_sandbox_function(png_destroy_write_struct, tainted_png_ptr_ptr, tainted_info_ptr_ptr);
+
+    sandbox.free_in_sandbox<png_structp**>(tainted_png_ptr_ptr);
+    if (info) {
+      sandbox.free_in_sandbox<png_structp**>(info_png_ptr_ptr);
+    }
   }
 };
 
