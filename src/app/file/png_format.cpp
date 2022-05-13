@@ -113,12 +113,7 @@ void read_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
     //TODO: Update to take account for image length
     png_bytep png_byte = tainted_png_byte.unverified_safe_pointer_because(1, "Compatibility");
 
-    //auto fp = sandbox.invoke_sandbox_function(png_get_io_ptr, tainted_png).copy_and_verify([](png_FILE_p val) {
-      //return val;
-    //});
-    
-    //TODO: Change FP to point to actual file later
-    FILE* fp = NULL;
+    auto fp = sandbox.lookup_app_ptr(sandbox_static_cast<FILE*>(sandbox.invoke_sandbox_function(png_get_io_ptr, tainted_png)));
 
     auto uwrSize = size.UNSAFE_unverified();
     size_t result = fread(png_byte, 1, uwrSize, fp);
@@ -189,11 +184,8 @@ tainted<int, rlbox_wasm2c_sandbox> png_user_chunk(rlbox_sandbox<rlbox_wasm2c_san
                               tainted<png_unknown_chunkp, rlbox_wasm2c_sandbox> unknown)
 {
   // TODO: Figure out how to unwrap this
-  //auto png_user_chunk_ptr = sandbox.invoke_sandbox_function(png_get_user_chunk_ptr, png).copy_and_verify([](png_voidp val) {
-    //return val;
-  //});
+  auto data = (std::shared_ptr<PngOptions>*) sandbox.lookup_app_ptr(sandbox.invoke_sandbox_function(png_get_user_chunk_ptr, png));
 
-  std::shared_ptr<PngOptions>* data = nullptr;
   std::shared_ptr<PngOptions>& opts = *data;
 
 
@@ -233,8 +225,8 @@ bool PngFormat::onLoad(FileOp* fop)
   PixelFormat pixelFormat;
 
   // TODO: Adjust to set custom IO functions
-  //FileHandle handle(open_file_with_exception(fop->filename(), "rb"));
-  //FILE* fp = handle.get();
+  FileHandle handle(open_file_with_exception(fop->filename(), "rb"));
+  FILE* fp = handle.get();
 
   /* Create and initialize the png_struct with the desired error handler
    * functions.  If you want to use the default stderr and longjump method,
@@ -267,7 +259,10 @@ bool PngFormat::onLoad(FileOp* fop)
   auto opts = std::make_shared<PngOptions>();
   //TODO: Make user chunk fn compatible
   auto sdf = sandbox.malloc_in_sandbox<int>(1);
-  sandbox.invoke_sandbox_function(png_set_read_user_chunk_fn, png, nullptr, userChunkCb);
+
+  auto optsPtr = sandbox.get_app_pointer((void*) (&opts));
+  auto tOptsPtr = optsPtr.to_tainted();
+  sandbox.invoke_sandbox_function(png_set_read_user_chunk_fn, png, tOptsPtr, userChunkCb);
 
   /* Allocate/initialize the memory for image information. */
   tainted<png_infop, rlbox_wasm2c_sandbox> info = sandbox.invoke_sandbox_function(png_create_info_struct, png);
@@ -276,6 +271,7 @@ bool PngFormat::onLoad(FileOp* fop)
   if (infoCheckPtr == nullptr) {
     fop->setError("png_create_info_struct\n");
     userChunkCb.unregister();
+    optsPtr.unregister();
     return false;
   }
 
@@ -289,8 +285,12 @@ bool PngFormat::onLoad(FileOp* fop)
   }
   */
 
+  auto appPtr = sandbox.get_app_pointer(static_cast<void*>(fp));
+  auto tAppPtr = appPtr.to_tainted();
+
+
   auto readDataCb = sandbox.register_callback(read_data_fn);
-  sandbox.invoke_sandbox_function(png_set_read_fn, png, nullptr, readDataCb);
+  sandbox.invoke_sandbox_function(png_set_read_fn, png, tAppPtr, readDataCb);
 
   /* If we have already read some of the signature */
   sandbox.invoke_sandbox_function(png_set_sig_bytes, png, sig_read);
@@ -369,6 +369,8 @@ bool PngFormat::onLoad(FileOp* fop)
       fop->setError("Color type not supported\n)");
       readDataCb.unregister();
       userChunkCb.unregister();
+      appPtr.unregister();
+      optsPtr.unregister();
       return false;
   }
 
@@ -385,6 +387,8 @@ bool PngFormat::onLoad(FileOp* fop)
     fop->setError("file_sequence_image %dx%d\n", imageWidth, imageHeight);
     userChunkCb.unregister();
     readDataCb.unregister();
+    appPtr.unregister();
+    optsPtr.unregister();
     return false;
   }
 
@@ -576,6 +580,8 @@ bool PngFormat::onLoad(FileOp* fop)
 
   readDataCb.unregister();
   userChunkCb.unregister();
+  appPtr.unregister();
+  optsPtr.unregister();
   return true;
 }
 
