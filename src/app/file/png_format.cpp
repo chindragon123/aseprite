@@ -37,7 +37,7 @@ using namespace rlbox;
 rlbox_sandbox<rlbox::rlbox_wasm2c_sandbox> sandbox;
 
 void create_sandbox() {
-  sandbox.create_sandbox("../../main/libpng.so");
+  sandbox.create_sandbox("../../src/main/libpng.so");
   return;
 }
 
@@ -237,13 +237,13 @@ bool PngFormat::onLoad(FileOp* fop)
  
   auto libVerStrSize = strlen(PNG_LIBPNG_VER_STRING);
   auto sbLibVer = sandbox.malloc_in_sandbox<char>(libVerStrSize + 1);
-  strncpy(sbLibVer.unverified_safe_pointer_because(libVerStrSize, "compatibility"), PNG_LIBPNG_VER_STRING, libVerStrSize);
+  strncpy(sbLibVer.unverified_safe_pointer_because(libVerStrSize, "just copying data"), PNG_LIBPNG_VER_STRING, libVerStrSize);
   auto userChunkCb = sandbox.register_callback(png_user_chunk);
 
   tainted<png_structp, rlbox_wasm2c_sandbox> png =
   sandbox.invoke_sandbox_function(png_create_read_struct, sbLibVer, nullptr,
                            nullptr, nullptr);
-  auto pngCheckPtr = png.unverified_safe_pointer_because(1, "Compatibility");
+  auto pngCheckPtr = png.unverified_safe_pointer_because(1, "Only checking if it's null");
   if (pngCheckPtr == nullptr) {
     fop->setError("png_create_read_struct\n");
     userChunkCb.unregister();
@@ -266,7 +266,7 @@ bool PngFormat::onLoad(FileOp* fop)
 
   /* Allocate/initialize the memory for image information. */
   tainted<png_infop, rlbox_wasm2c_sandbox> info = sandbox.invoke_sandbox_function(png_create_info_struct, png);
-  auto infoCheckPtr = info.unverified_safe_pointer_because(1, "Compatibility");
+  auto infoCheckPtr = info.unverified_safe_pointer_because(1, "Just checking if the pointer is null");
   DestroyReadPng destroyer(png, info);
   if (infoCheckPtr == nullptr) {
     fop->setError("png_create_info_struct\n");
@@ -308,11 +308,32 @@ bool PngFormat::onLoad(FileOp* fop)
 
   sandbox.invoke_sandbox_function(png_get_IHDR, png, info, sb_width, sb_height, sb_bit_depth, sb_color_type,
                sb_interlace_type, nullptr, nullptr);
-  width = *(sb_width.unverified_safe_pointer_because(1, "Compatibility"));
-  height = *(sb_height.unverified_safe_pointer_because(1, "Compatibility"));
-  bit_depth = *(sb_bit_depth.unverified_safe_pointer_because(1, "Compatibility"));
-  color_type = *(sb_color_type.unverified_safe_pointer_because(1, "Compatibility"));
-  interlace_type = *(sb_interlace_type.unverified_safe_pointer_because(1, "Compatibility"));
+  width = (*sb_width).copy_and_verify([](png_uint_32 thing) {
+	if (thing > 100000) exit(1);
+	return thing;	
+  });
+  height = (*sb_height).copy_and_verify([](png_uint_32 thing) {
+	if (thing > 100000) exit(1);
+	return thing;
+  });
+  bit_depth = (*sb_bit_depth).copy_and_verify([](int thing) {
+	if (thing != 1 && thing != 2 && thing != 4 && thing != 8 && thing != 16) {
+		exit(1);
+	}
+	return thing;
+  });
+  color_type = (*sb_color_type).copy_and_verify([](int thing) {
+	if (thing < 0 || thing == 1 || thing == 5 || thing > 6) {
+		exit(1);
+	}
+	return thing;
+  });
+  interlace_type = (*sb_interlace_type).copy_and_verify([](int thing) {
+	if (thing < 0 || thing > 1) {
+		exit(1);
+	}
+	return thing;
+  });
 
 
   /* Set up the data transformations you want.  Note that these are all
@@ -338,6 +359,9 @@ bool PngFormat::onLoad(FileOp* fop)
    * see the png_read_row() method below:
    */
   int number_passes = sandbox.invoke_sandbox_function(png_set_interlace_handling, png).copy_and_verify([] (int thing) {
+	if (thing != 1 && thing != 7) {
+		exit(1);
+	}
 	return thing;
   });
 
@@ -375,11 +399,13 @@ bool PngFormat::onLoad(FileOp* fop)
   }
 
   int imageWidth = sandbox.invoke_sandbox_function(png_get_image_width, png, info).copy_and_verify([] (int thing) {
+	if (thing < 0 || thing > 100000) exit(1);
 	return thing;
   });
   
   int imageHeight = sandbox.invoke_sandbox_function(png_get_image_height, png, info).copy_and_verify([](int thing) {
-	return thing;		  
+	if (thing < 0 || thing > 100000) exit(1);
+	return thing;	
   });
   
   Image* image = fop->sequenceImage(pixelFormat, imageWidth, imageHeight);
@@ -402,11 +428,17 @@ bool PngFormat::onLoad(FileOp* fop)
   auto sb_num_palette = sandbox.malloc_in_sandbox<int>(1);
   if (color_type == PNG_COLOR_TYPE_PALETTE &&
       sandbox.invoke_sandbox_function(png_get_PLTE, png, info, sb_palette, sb_num_palette).copy_and_verify([] (png_uint_32 thing) {
+	if (thing != 0 && thing != PNG_INFO_PLTE) exit(1);
 	return thing;	     
    })) {
     
-    palette = *((png_colorp*) sb_palette.copy_and_verify_address([] (uintptr_t thing) { return thing; }));
-    num_palette = *((int*) sb_num_palette.unverified_safe_pointer_because(1, "Compat"));  
+    palette = sb_palette.copy_and_verify_address([] (uintptr_t thing) { return *((png_color**) thing); });
+    num_palette = (*sb_num_palette).copy_and_verify([](int thing) {
+	if (thing < 0 || thing > 256) {
+		exit(1);
+	}	
+	return thing;
+    }); 
     fop->sequenceSetNColors(num_palette);
 
     for (int c=0; c<num_palette; ++c) {
@@ -424,7 +456,7 @@ bool PngFormat::onLoad(FileOp* fop)
     auto trans_ptr = sandbox.malloc_in_sandbox<png_bytep>(1);
 
     sandbox.invoke_sandbox_function(png_get_tRNS, png, info, trans_ptr, num_trans_ptr, nullptr);
-    num_trans = *((int*) num_trans_ptr.unverified_safe_pointer_because(1, "Compatibility"));
+    num_trans = (*num_trans_ptr).copy_and_verify([](int thing) { if (thing < 0) exit(1); return thing;});
     trans = *((png_bytepp) trans_ptr.copy_and_verify_address([](uintptr_t thing) {return thing;}));    
 
     for (int i = 0; i < num_trans; ++i) {
@@ -449,7 +481,8 @@ bool PngFormat::onLoad(FileOp* fop)
 
   auto rows_pointer = sandbox.malloc_in_sandbox<png_bytep>(height);
   size_t numRowBytes = sandbox.invoke_sandbox_function(png_get_rowbytes, png, info).copy_and_verify([](size_t thing) {
-	return thing;		  
+	if (thing < 0 || thing > 100000) exit(1);
+	return thing;	
   });
 
   for (y = 0; y < height; y++)
