@@ -128,6 +128,29 @@ void read_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
     }
 }
 
+void write_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
+                  tainted<png_structp, rlbox_wasm2c_sandbox> tainted_png,
+                  tainted<png_bytep, rlbox_wasm2c_sandbox> tainted_png_byte,
+                  tainted<size_t, rlbox_wasm2c_sandbox> size) 
+{
+    //TODO: Update to take account for image length
+    png_bytep png_byte = tainted_png_byte.unverified_safe_pointer_because(1, "Compatibility");
+
+    auto fp = sandbox.lookup_app_ptr(sandbox_static_cast<FILE*>(sandbox.invoke_sandbox_function(png_get_io_ptr, tainted_png)));
+
+    auto uwrSize = size.UNSAFE_unverified();
+    size_t result = fwrite(png_byte, 1, uwrSize, fp);
+
+    if (result != uwrSize){
+        const char* error_msg = "read error in read_data_memory";
+        size_t error_msg_size = strlen(error_msg) + 1;
+        auto tainted_msg = sandbox.malloc_in_sandbox<char>(error_msg_size);
+        std::strncpy(tainted_msg.UNSAFE_unverified(), error_msg, error_msg_size);
+
+        sandbox.invoke_sandbox_function(png_error, tainted_png, tainted_msg);
+    }
+}
+
 // TODO this should be information in FileOp parameter of onSave()
 static bool fix_one_alpha_pixel = false;
 
@@ -149,7 +172,22 @@ class DestroyReadPng {
 public:
   DestroyReadPng(tainted<png_structp, rlbox_wasm2c_sandbox> png, tainted<png_infop, rlbox_wasm2c_sandbox> info) : png(png), info(info) { }
   ~DestroyReadPng() {  
-	sandbox.invoke_sandbox_function(png_destroy_read_struct, nullptr, nullptr, nullptr);
+
+    tainted<png_structp**, rlbox_wasm2c_sandbox> tainted_png_ptr_ptr = sandbox.malloc_in_sandbox<png_structp**>(1);
+    tainted_png_png_ptr[0] = png;
+
+    tainted<png_infop**, rlbox_wasm2c_sandbox> tainted_info_ptr_ptr = nullptr;
+    if (info) {
+      tainted_info_ptr_ptr = sandbox.malloc_in_sandbox<png_infop**>(1);
+      tainted_info_ptr_ptr[0] = info;
+    }
+
+    sandbox.invoke_sandbox_function(png_destroy_read_struct, tainted_png_ptr_ptr, tainted_info_ptr_ptr, nullptr);
+
+    sandbox.free_in_sandbox<png_structp**>(tainted_png_ptr_ptr);
+    if (info) {
+      sandbox.free_in_sandbox<png_structp**>(info_png_ptr_ptr);
+    }
   }
 };
 
@@ -160,7 +198,21 @@ public:
   DestroyWritePng(tainted<png_structp, rlbox_wasm2c_sandbox> png, tainted<png_infop, rlbox_wasm2c_sandbox> info) : png(png), info(info) { }
   ~DestroyWritePng() {
 
-    sandbox.invoke_sandbox_function(png_destroy_write_struct, nullptr, nullptr);
+    tainted<png_structp**, rlbox_wasm2c_sandbox> tainted_png_ptr_ptr = sandbox.malloc_in_sandbox<png_structp**>(1);
+    tainted_png_png_ptr[0] = png;
+
+    tainted<png_infop**, rlbox_wasm2c_sandbox> tainted_info_ptr_ptr = nullptr;
+    if (info) {
+      tainted_info_ptr_ptr = sandbox.malloc_in_sandbox<png_infop**>(1);
+      tainted_info_ptr_ptr[0] = info;
+    }
+
+    sandbox.invoke_sandbox_function(png_destroy_write_struct, tainted_png_ptr_ptr, tainted_info_ptr_ptr);
+
+    sandbox.free_in_sandbox<png_structp**>(tainted_png_ptr_ptr);
+    if (info) {
+      sandbox.free_in_sandbox<png_structp**>(info_png_ptr_ptr);
+    }
   }
 };
 
@@ -656,13 +708,16 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   auto tainted_compression = sandbox.malloc_in_sandbox<int>(1);
 
   auto png_iCCP = sandbox.invoke_sandbox_function(png_get_iCCP, png_ptr, info_ptr, tainted_name, tainted_compression, tainted_profile, tainted_length).copy_and_verify([](png_uint_32 val) {
+    if (val != PNG_INFO_iCCP && val != 0) {
+      exit(1);
+    }
     return val;
   });
 
 
-  profile = *((png_bytep*) tainted_profile.copy_and_verify_address([](uintptr_t addr) {return addr;}));
+  profile = *((png_bytep*) tainted_profile.copy_and_verify_address([](uintptr_t addr) {if (addr == NULL) exit(1); return addr;}));
   length = *(tainted_length.unverified_safe_pointer_because(1, "compat"));
-  name = *((char**) tainted_name.copy_and_verify_address([](uintptr_t addr) {return addr;}));
+  name = *((char**) tainted_name.copy_and_verify_address([](uintptr_t addr) {if (addr == NULL) exit(1); return addr;}));
   compression = *(tainted_compression.unverified_safe_pointer_because(1, "compat"));
 
 
@@ -676,6 +731,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   // Second, check for sRGB.
 
   auto png_valid = sandbox.invoke_sandbox_function(png_get_valid, png_ptr, info_ptr, PNG_INFO_sRGB).copy_and_verify([](png_uint_32 val) {
+    if (val != 0 && ((val & ~PNG_INFO_sRGB) != 0)) {
+      exit(1);
+    }
     return val;
   });
 
@@ -702,7 +760,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   auto tainted_invGamma = sandbox.malloc_in_sandbox<int>(1);
 
   auto png_cHRM_fixed = sandbox.invoke_sandbox_function(png_get_cHRM_fixed, png_ptr, info_ptr, tainted_wx, tainted_wy, tainted_rx, tainted_ry, tainted_gx, tainted_gy, tainted_bx, tainted_by).copy_and_verify([](png_uint_32 val) {
-    return val;
+    if (val != PNG_INFO_cHRM && val != 0) {
+        exit(1);
+      }
   });
 
   wx = *(tainted_wx.UNSAFE_unverified());
@@ -722,7 +782,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
     primaries.bx = png_fixtof(bx); primaries.by = png_fixtof(by);
 
     auto png_gAMA_fixed = sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {
-      return val;
+      if (val != PNG_INFO_gAMA && val != 0) {
+        exit(1);
+      }
     });
 
     invGamma = *(tainted_invGamma.UNSAFE_unverified());
@@ -742,7 +804,12 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   }
 
   // Last, check for gamma.
-  if (PNG_INFO_gAMA == sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {return val;})) {
+  if (PNG_INFO_gAMA == sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {
+    if (val != PNG_INFO_gAMA && val != 0) {
+        exit(1);
+    }
+    return val;
+  })) {
     // Since there is no cHRM, we will guess sRGB gamut.
     return gfx::ColorSpace::MakeSRGBWithGamma(1.0f / png_fixtof(invGamma));
   }
@@ -786,8 +853,8 @@ bool PngFormat::onSave(FileOp* fop)
   //			    report_png_error, report_png_error);
 
   auto tainted_png = sandbox.invoke_sandbox_function(png_create_write_struct, sbLibVer, nullptr, nullptr, nullptr);
-
-  if (tainted_png.UNSAFE_unverified() == nullptr)
+  auto check_png = tainted_png.unverified_safe_pointer_because(1, "Compatibility");
+  if (check_png == nullptr)
     return false;
 
   // Remove sRGB profile checks
@@ -796,10 +863,17 @@ bool PngFormat::onSave(FileOp* fop)
 
   //info = png_create_info_struct(png);
   auto tainted_info = sandbox.invoke_sandbox_function(png_create_info_struct, tainted_png);
-  DestroyWritePng destroyer(tainted_png, tainted_info);
-
-  if (tainted_info.UNSAFE_unverified() == nullptr)
+  auto check_info = tainted_info.unverified_safe_pointer_because(1, "Compatibility");
+  if (check_info == nullptr)
     return false;
+
+  DestroyWritePng destroyer(check_png, check_info);
+
+  auto appPtr = sandbox.get_app_pointer(static_cast<void*>(fp));
+  auto tAppPtr = appPtr.to_tainted();
+
+  auto writeDataCb = sandbox.register_callback(write_data_fn);
+  sandbox.invoke_sandbox_function(png_set_write_fn, tainted_png, tAppPtr, writeDataCb);
 
   /*
   if (setjmp(sandbox.invoke_sandbox_function(png_jmpbuf, tainted_png).UNSAFE_unverified()))
@@ -859,13 +933,19 @@ bool PngFormat::onSave(FileOp* fop)
                 unknown.name[2],
                 unknown.name[3]);
       unknown.data = (png_byte*)&chunk.data[0];
+      auto tainted_data = sandbox.malloc_in_sandbox<png_byte>(chunk.data.size());
+      memcpy(tainted_data, &chunk.data[0], chunk.data.size());
+      unknown.data = tainted_data.unverified_safe_pointer_because(chunk.data.size(), "Compatibility");
       unknown.size = chunk.data.size();
       unknown.location = chunk.location;
       ++i;
     }
+
+    auto tainted_unknowns = sandbox.malloc_in_sandbox<png_unknown_chunk>(num_unknowns);
+    memcpy(tainted_unknowns, &unknowns[0], num_unknowns*sizeof(png_unknown_chunk));
+
     //png_set_unknown_chunks(png, info, &unknowns[0], num_unknowns);
-    // TODO: Adjust this function
-    //sandbox.invoke_sandbox_function(png_set_unknown_chunks, tainted_png, tainted_info, &unknowns[0], num_unknowns);
+    sandbox.invoke_sandbox_function(png_set_unknown_chunks, tainted_png, tainted_info, tainted_unknowns, num_unknowns);
   }
 
   if (fop->preserveColorProfile() &&
@@ -931,13 +1011,13 @@ bool PngFormat::onSave(FileOp* fop)
   sandbox.invoke_sandbox_function(png_set_packing, tainted_png);
 
   //row_pointer = (png_bytep)png_malloc(png, png_get_rowbytes(png, info));
-  auto rowBytes = sandbox.invoke_sandbox_function(png_get_rowbytes, tainted_png, tainted_info).UNSAFE_unverified();
+  auto rowBytes = sandbox.invoke_sandbox_function(png_get_rowbytes, tainted_png, tainted_info).copy_and_verify([] (png_uint_32 thing) { return thing; });
   auto tainted_row_pointer = sandbox.malloc_in_sandbox<png_byte>(rowBytes);
 
   for (png_uint_32 y=0; y<height; ++y) {
-    uint8_t* dst_address = tainted_row_pointer.UNSAFE_unverified();
+    uint8_t* dst_address = tainted_row_pointer.copy_and_verify([] (png_byte thing) { return thing; });
 
-    if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_RGB_ALPHA) {
+    if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).copy_and_verify([] (png_byte thing) { return thing; }) == PNG_COLOR_TYPE_RGB_ALPHA) {
       unsigned int x, c, a;
       bool opaque = true;
 
@@ -988,7 +1068,7 @@ bool PngFormat::onSave(FileOp* fop)
         }
       }
     }
-    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_RGB) {
+    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).copy_and_verify([] (png_byte thing) { return thing; }) == PNG_COLOR_TYPE_RGB) {
       uint32_t* src_address = (uint32_t*)image->getPixelAddress(0, y);
       unsigned int x, c;
 
@@ -999,7 +1079,7 @@ bool PngFormat::onSave(FileOp* fop)
         *(dst_address++) = rgba_getb(c);
       }
     }
-    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_GRAY_ALPHA) {
+    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).copy_and_verify([] (png_byte thing) { return thing; }) == PNG_COLOR_TYPE_GRAY_ALPHA) {
       uint16_t* src_address = (uint16_t*)image->getPixelAddress(0, y);
       unsigned int x, c, a;
       bool opaque = true;
@@ -1019,7 +1099,7 @@ bool PngFormat::onSave(FileOp* fop)
         *(dst_address++) = a;
       }
     }
-    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_GRAY) {
+    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).copy_and_verify([] (png_byte thing) { return thing; }) == PNG_COLOR_TYPE_GRAY) {
       uint16_t* src_address = (uint16_t*)image->getPixelAddress(0, y);
       unsigned int x, c;
 
@@ -1028,7 +1108,7 @@ bool PngFormat::onSave(FileOp* fop)
         *(dst_address++) = graya_getv(c);
       }
     }
-    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).UNSAFE_unverified() == PNG_COLOR_TYPE_PALETTE) {
+    else if (sandbox.invoke_sandbox_function(png_get_color_type, tainted_png, tainted_info).copy_and_verify([] (png_byte thing) { return thing; }) == PNG_COLOR_TYPE_PALETTE) {
       uint8_t* src_address = (uint8_t*)image->getPixelAddress(0, y);
       unsigned int x;
 
@@ -1049,6 +1129,7 @@ bool PngFormat::onSave(FileOp* fop)
     sandbox.free_in_sandbox<png_color>(tainted_palette);
   }
 
+  writeDataCb.unregister();
   return true;
 }
 
