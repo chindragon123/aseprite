@@ -128,6 +128,29 @@ void read_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
     }
 }
 
+void write_data_fn(rlbox_sandbox<rlbox_wasm2c_sandbox>& _,
+                  tainted<png_structp, rlbox_wasm2c_sandbox> tainted_png,
+                  tainted<png_bytep, rlbox_wasm2c_sandbox> tainted_png_byte,
+                  tainted<size_t, rlbox_wasm2c_sandbox> size) 
+{
+    //TODO: Update to take account for image length
+    png_bytep png_byte = tainted_png_byte.unverified_safe_pointer_because(1, "Compatibility");
+
+    auto fp = sandbox.lookup_app_ptr(sandbox_static_cast<FILE*>(sandbox.invoke_sandbox_function(png_get_io_ptr, tainted_png)));
+
+    auto uwrSize = size.UNSAFE_unverified();
+    size_t result = fwrite(png_byte, 1, uwrSize, fp);
+
+    if (result != uwrSize){
+        const char* error_msg = "read error in read_data_memory";
+        size_t error_msg_size = strlen(error_msg) + 1;
+        auto tainted_msg = sandbox.malloc_in_sandbox<char>(error_msg_size);
+        std::strncpy(tainted_msg.UNSAFE_unverified(), error_msg, error_msg_size);
+
+        sandbox.invoke_sandbox_function(png_error, tainted_png, tainted_msg);
+    }
+}
+
 // TODO this should be information in FileOp parameter of onSave()
 static bool fix_one_alpha_pixel = false;
 
@@ -149,7 +172,22 @@ class DestroyReadPng {
 public:
   DestroyReadPng(tainted<png_structp, rlbox_wasm2c_sandbox> png, tainted<png_infop, rlbox_wasm2c_sandbox> info) : png(png), info(info) { }
   ~DestroyReadPng() {  
-	sandbox.invoke_sandbox_function(png_destroy_read_struct, nullptr, nullptr, nullptr);
+
+    tainted<png_structp**, rlbox_wasm2c_sandbox> tainted_png_ptr_ptr = sandbox.malloc_in_sandbox<png_structp**>(1);
+    tainted_png_png_ptr[0] = png;
+
+    tainted<png_infop**, rlbox_wasm2c_sandbox> tainted_info_ptr_ptr = nullptr;
+    if (info) {
+      tainted_info_ptr_ptr = sandbox.malloc_in_sandbox<png_infop**>(1);
+      tainted_info_ptr_ptr[0] = info;
+    }
+
+    sandbox.invoke_sandbox_function(png_destroy_read_struct, tainted_png_ptr_ptr, tainted_info_ptr_ptr, nullptr);
+
+    sandbox.free_in_sandbox<png_structp**>(tainted_png_ptr_ptr);
+    if (info) {
+      sandbox.free_in_sandbox<png_structp**>(info_png_ptr_ptr);
+    }
   }
 };
 
@@ -160,7 +198,21 @@ public:
   DestroyWritePng(tainted<png_structp, rlbox_wasm2c_sandbox> png, tainted<png_infop, rlbox_wasm2c_sandbox> info) : png(png), info(info) { }
   ~DestroyWritePng() {
 
-    sandbox.invoke_sandbox_function(png_destroy_write_struct, nullptr, nullptr);
+    tainted<png_structp**, rlbox_wasm2c_sandbox> tainted_png_ptr_ptr = sandbox.malloc_in_sandbox<png_structp**>(1);
+    tainted_png_png_ptr[0] = png;
+
+    tainted<png_infop**, rlbox_wasm2c_sandbox> tainted_info_ptr_ptr = nullptr;
+    if (info) {
+      tainted_info_ptr_ptr = sandbox.malloc_in_sandbox<png_infop**>(1);
+      tainted_info_ptr_ptr[0] = info;
+    }
+
+    sandbox.invoke_sandbox_function(png_destroy_write_struct, tainted_png_ptr_ptr, tainted_info_ptr_ptr);
+
+    sandbox.free_in_sandbox<png_structp**>(tainted_png_ptr_ptr);
+    if (info) {
+      sandbox.free_in_sandbox<png_structp**>(info_png_ptr_ptr);
+    }
   }
 };
 
@@ -623,13 +675,16 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   auto tainted_compression = sandbox.malloc_in_sandbox<int>(1);
 
   auto png_iCCP = sandbox.invoke_sandbox_function(png_get_iCCP, png_ptr, info_ptr, tainted_name, tainted_compression, tainted_profile, tainted_length).copy_and_verify([](png_uint_32 val) {
+    if (val != PNG_INFO_iCCP && val != 0) {
+      exit(1);
+    }
     return val;
   });
 
 
-  profile = *((png_bytep*) tainted_profile.copy_and_verify_address([](uintptr_t addr) {return addr;}));
+  profile = *((png_bytep*) tainted_profile.copy_and_verify_address([](uintptr_t addr) {if (addr == NULL) exit(1); return addr;}));
   length = *(tainted_length.unverified_safe_pointer_because(1, "compat"));
-  name = *((char**) tainted_name.copy_and_verify_address([](uintptr_t addr) {return addr;}));
+  name = *((char**) tainted_name.copy_and_verify_address([](uintptr_t addr) {if (addr == NULL) exit(1); return addr;}));
   compression = *(tainted_compression.unverified_safe_pointer_because(1, "compat"));
 
 
@@ -643,6 +698,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   // Second, check for sRGB.
 
   auto png_valid = sandbox.invoke_sandbox_function(png_get_valid, png_ptr, info_ptr, PNG_INFO_sRGB).copy_and_verify([](png_uint_32 val) {
+    if (val != 0 && ((val & ~PNG_INFO_sRGB) != 0)) {
+      exit(1);
+    }
     return val;
   });
 
@@ -669,7 +727,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   auto tainted_invGamma = sandbox.malloc_in_sandbox<int>(1);
 
   auto png_cHRM_fixed = sandbox.invoke_sandbox_function(png_get_cHRM_fixed, png_ptr, info_ptr, tainted_wx, tainted_wy, tainted_rx, tainted_ry, tainted_gx, tainted_gy, tainted_bx, tainted_by).copy_and_verify([](png_uint_32 val) {
-    return val;
+    if (val != PNG_INFO_cHRM && val != 0) {
+        exit(1);
+      }
   });
 
   wx = *(tainted_wx.UNSAFE_unverified());
@@ -689,7 +749,9 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
     primaries.bx = png_fixtof(bx); primaries.by = png_fixtof(by);
 
     auto png_gAMA_fixed = sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {
-      return val;
+      if (val != PNG_INFO_gAMA && val != 0) {
+        exit(1);
+      }
     });
 
     invGamma = *(tainted_invGamma.UNSAFE_unverified());
@@ -709,7 +771,12 @@ gfx::ColorSpaceRef PngFormat::loadColorSpace(tainted<png_structp, rlbox_wasm2c_s
   }
 
   // Last, check for gamma.
-  if (PNG_INFO_gAMA == sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {return val;})) {
+  if (PNG_INFO_gAMA == sandbox.invoke_sandbox_function(png_get_gAMA_fixed, png_ptr, info_ptr, tainted_invGamma).copy_and_verify([](png_uint_32 val) {
+    if (val != PNG_INFO_gAMA && val != 0) {
+        exit(1);
+    }
+    return val;
+  })) {
     // Since there is no cHRM, we will guess sRGB gamut.
     return gfx::ColorSpace::MakeSRGBWithGamma(1.0f / png_fixtof(invGamma));
   }
